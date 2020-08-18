@@ -3,7 +3,6 @@ from flask_restful import Resource, Api
 from flask_jwt_extended import (
     JWTManager, jwt_required, create_access_token
 )
-from sqlalchemy.orm.exc import NoResultFound
 from requests import put, get, post, delete
 from db_setup import setup, User
 import logging
@@ -19,8 +18,7 @@ jwt = JWTManager(app)
 
 bot = telebot.TeleBot(config.BOT_TOKEN)
 
-##!!!!!!!!!!!!
-redis = redis.Redis(host='localhost', port=6379, db=0)
+redis = redis.Redis()
 
 DBSession = setup()
 
@@ -33,9 +31,7 @@ class SetWebhook(Resource):
 
     def get(self):
         bot.remove_webhook()
-        ##!!!!!!!!!!!!
-        # bot.set_webhook(url=config.WEBHOOK_URL_BASE + config.WEBHOOK_URL_PATH, certificate=open(config.WEBHOOK_SSL_CERT, 'r'))
-        bot.set_webhook(url=config.WEBHOOK_URL_BASE + config.WEBHOOK_URL_PATH)
+        bot.set_webhook(url=config.WEBHOOK_URL_BASE + config.WEBHOOK_URL_PATH, certificate=open(config.WEBHOOK_SSL_CERT, 'r'))
         return jsonify(status=200)
 
 
@@ -45,28 +41,32 @@ class Users(Resource):
     def get(self, tg_id):
         try:
             session = DBSession()
-            user = session.query(User).filter_by(telegram_id=tg_id).one()
+            user = session.query(User).filter_by(telegram_id=tg_id).first()
             user = user.as_dict()
             user['status'] = 200
             return jsonify(user)
-        except NoResultFound:
+        except Exception:
             return jsonify(status=404)
 
     def put(self, tg_id):
-        session = DBSession()
-        user = session.query(User).filter_by(telegram_id=tg_id).one()
-        if not user:
+        try:
+            session = DBSession()
+            user = session.query(User).filter_by(telegram_id=tg_id).first()
+            user.token = create_access_token(identity=tg_id)
+            session.commit()
+            return jsonify(status=200)
+        except Exception:
             return jsonify(status=404)
-        user.token = create_access_token(identity=tg_id)
-        session.commit()
-        return jsonify(status=200)
 
     def delete(self, tg_id):
-        session = DBSession()
-        user = session.query(User).filter_by(telegram_id=tg_id).one()
-        user.token = None
-        session.commit()
-        return jsonify(status=200)
+        try:
+            session = DBSession()
+            user = session.query(User).filter_by(telegram_id=tg_id).first()
+            user.token = None
+            session.commit()
+            return jsonify(status=200)
+        except Exception:
+            return jsonify(status=404)
 
     def post(self, tg_id):
         session = DBSession()
@@ -144,7 +144,10 @@ def logout(message):
     telegram_id = message.from_user.id
     response = delete('{0}/users/{1}'.format(config.REST_API, telegram_id)).json()
     if response['status'] == 200:
-        bot.send_message(message.from_user.id, config.LOGOUT)
+        text_message = config.LOGOUT
+    else:
+        text_message = config.LOGOUT_NOT
+    bot.send_message(message.from_user.id, text_message)
 
 
 @bot.message_handler(commands=['register'])
@@ -162,24 +165,32 @@ def register(message):
         }
 
         params = message.text[9:].split()
+        print(params)
         if len(params[0]) == 8 and params[0].isdigit() and params[1].isdigit():
             code = params[0]
             telegram_id = params[1]
         else:
             raise Exception(config.NOT_FORMAT)
+        try:
+            response = post('{0}/redis'.format(config.REST_API),
+                            data={'code': code, 'telegram_id': telegram_id},
+                            headers=headers).json()
 
-        response = post('{0}/redis'.format(config.REST_API),
-                        data={'code': code, 'telegram_id': telegram_id},
-                        headers=headers).json()
-
-        if response['status'] == 200:
-            text_message = config.CONF
-        elif response['status'] == 400:
-            text_message = config.REG_EXIST
-        else:
-            text_message = config.ERROR
+            if response['status'] == 200:
+                text_message = config.CONF
+            elif response['status'] == 400:
+                text_message = config.REG_EXIST
+            else:
+                text_message = config.ERROR
+        except Exception:
+            text_message = config.NOT_AUTH
     except Exception as e:
-        text_message = e if e == config.NOT_SU else config.NOT_FORMAT
+        if e == config.NOT_SU:
+           text_message = e
+        elif e == "'status'":
+           text_message = config.NOT_AUTH
+        else:
+           text_message = config.NOT_FORMAT
     finally:
         bot.send_message(message.from_user.id, text_message)
 
