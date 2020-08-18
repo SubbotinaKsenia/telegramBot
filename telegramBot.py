@@ -165,7 +165,6 @@ def register(message):
         }
 
         params = message.text[9:].split()
-        print(params)
         if len(params[0]) == 8 and params[0].isdigit() and params[1].isdigit():
             code = params[0]
             telegram_id = params[1]
